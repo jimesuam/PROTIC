@@ -1,0 +1,161 @@
+//TRANSMITTER//
+// Code by Jimena Suárez 
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+
+
+//Proximity
+#include <Wire.h>
+#include "Adafruit_VCNL4010.h"
+Adafruit_VCNL4010 vcnl;
+int LED = 2;
+int Signal;       
+int Ambient;           // Holds incoming raw data
+int Threshold = 2000;       // Determine which signal to determine as object
+// Pressure
+int PRESSURE_SENSOR_PIN = 35;
+int Threshold_Pressure = 3000;
+
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pTxCharacteristic;
+BLECharacteristic* pTxCharacteristic_1;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+uint32_t value = 10;
+
+#define SERVICE_UUID        "0df873cd-0ae4-4e58-b130-d20fffc88446"
+#define CHARACTERISTIC_UUID "9724e56d-659b-46bd-91ad-cef8027715b3"
+#define CHARACTERISTIC_UUID_1 "40b80bf0-85f7-47be-ac16-c77a66aff6b8"
+
+
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+    }
+};
+
+class MyCallbacks: public BLECharacteristicCallbacks {
+
+    void onWrite(BLECharacteristic *pTxCharacteristic)
+    {
+      //trial HEX
+      std::string rxValue = pTxCharacteristic -> getValue ();
+      if (rxValue.length() > 0){
+        Serial.print ("Recieved Value: ");
+        for (int i = 0; i < rxValue.length(); i++)
+          Serial.print(rxValue[i], HEX);
+
+        Serial.println ();
+      }
+    }
+};
+
+
+void setup() {
+  Serial.begin(9600);
+
+  // Create the BLE Device
+  BLEDevice::init("ESP32");
+
+  // Create the BLE Server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create a BLE Characteristic
+  pTxCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID,
+                      BLECharacteristic::PROPERTY_READ   |
+                      BLECharacteristic::PROPERTY_WRITE  |
+                      BLECharacteristic::PROPERTY_NOTIFY |
+                      BLECharacteristic::PROPERTY_INDICATE
+                    );
+
+  pTxCharacteristic_1 = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID_1,
+                      BLECharacteristic::PROPERTY_READ   |
+                      BLECharacteristic::PROPERTY_WRITE  |
+                      BLECharacteristic::PROPERTY_NOTIFY |
+                      BLECharacteristic::PROPERTY_INDICATE
+                    );  
+
+  // https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.descriptor.gatt.client_characteristic_configuration.xml
+  // Create a BLE Descriptor
+  pTxCharacteristic->addDescriptor(new BLE2902());
+  pTxCharacteristic_1 ->addDescriptor(new BLE2902());
+
+  // Start the service
+  pService->start();
+
+
+  // Start advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(false);
+  pAdvertising->setMinPreferred(0x0);  // set value to 0x00 to not advertise this parameter
+  BLEDevice::startAdvertising();
+  Serial.println("Waiting a client connection to notify...");
+
+//Proximity
+  pinMode (LED, OUTPUT);
+  Serial.println("VCNL4010 test");
+     if (! vcnl.begin()){
+      Serial.println("Sensor not found :(");
+      while (1);
+      }
+    Serial.println("Found VCNL4010");
+    vcnl.setFrequency(vcnl4010_freq (100));
+    vcnl.setLEDcurrent(20);
+}
+
+void loop() {
+  // PROXIMITY SENSOR 
+  Signal = vcnl.readProximity();
+  Serial.print("Proximity: "); 
+  Serial.println(Signal);
+  
+  // PRESSURE SENSOR
+  int analogReading = analogRead(PRESSURE_SENSOR_PIN);
+  Serial.print("Pressure: ");
+  Serial.println(analogReading);
+
+  // Convert the integer values to byte arrays
+  uint8_t signalBytes[4];
+  signalBytes[0] = Signal & 0xFF;
+  signalBytes[1] = (Signal >> 8) & 0xFF;
+  signalBytes[2] = (Signal >> 16) & 0xFF;
+  signalBytes[3] = (Signal >> 24) & 0xFF;
+
+  uint8_t pressureBytes[4];
+  pressureBytes[0] = analogReading & 0xFF;
+  pressureBytes[1] = (analogReading >> 8) & 0xFF;
+  pressureBytes[2] = (analogReading >> 16) & 0xFF;
+  pressureBytes[3] = (analogReading >> 24) & 0xFF;
+
+  // Set the byte arrays as the characteristic values
+  pTxCharacteristic->setValue(signalBytes, sizeof(signalBytes));
+  pTxCharacteristic_1->setValue(pressureBytes, sizeof(pressureBytes));
+
+  // Notify if the signal is above the threshold
+  if (deviceConnected) {
+    if (Signal > Threshold) {
+      pTxCharacteristic->notify();
+    }
+
+    if (analogReading > Threshold_Pressure) {
+      pTxCharacteristic_1->notify();
+    }
+  }
+
+  delay(1000); // Adjust delay as needed
+}
