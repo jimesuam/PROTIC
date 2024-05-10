@@ -1,0 +1,168 @@
+// RECEIVER
+// Code by Jimena Suárez
+#include "BLEDevice.h"
+
+int motorPin = 0; // Motor pin for proximity sensor
+int motorPin2 = 2; // Motor pin for pressure sensor
+int value;
+int valPressure;
+
+static BLEUUID serviceUUID("0df873cd-0ae4-4e58-b130-d20fffc88446");
+static BLEUUID charUUID_1("9724e56d-659b-46bd-91ad-cef8027715b3");
+static BLEUUID charUUID_2("40b80bf0-85f7-47be-ac16-c77a66aff6b8");
+
+static boolean doConnect = false;
+static boolean connected = false;
+static boolean doScan = false;
+
+// Define pointers for BLE connection
+static BLEAdvertisedDevice* myDevice;
+BLERemoteCharacteristic* pRemoteChar_1;
+BLERemoteCharacteristic* pRemoteChar_2;
+
+// Function to parse a byte array into an integer
+uint32_t parseByteArrayToInt(uint8_t* byteArray, size_t length) {
+    uint32_t result = 0;
+    for (size_t i = 0; i < length; i++) {
+        result |= (static_cast<uint32_t>(byteArray[i]) << (8 * i));
+    }
+    return result;
+}
+
+// Callback function for BLE notifications
+void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic,
+                           uint8_t* pData,
+                           size_t length,
+                           bool isNotify) {
+    // Process notification data here
+}
+
+// Callback function for BLE client events
+class MyClientCallback : public BLEClientCallbacks {
+  void onConnect(BLEClient* pclient) {}
+  void onDisconnect(BLEClient* pclient) {
+    connected = false;
+    Serial.println("onDisconnect");
+  }
+};
+
+// Connect to BLE server
+bool connectToServer() {
+    BLEClient*  pClient = BLEDevice::createClient();
+    pClient->setClientCallbacks(new MyClientCallback());
+    pClient->connect(myDevice);
+    BLERemoteService* pRemoteService = pClient->getService(serviceUUID);
+    if (pRemoteService == nullptr) {
+        pClient->disconnect();
+        return false;
+    }
+    connected = true;
+    pRemoteChar_1 = pRemoteService->getCharacteristic(charUUID_1);
+    pRemoteChar_2 = pRemoteService->getCharacteristic(charUUID_2);
+    if (!connectCharacteristic(pRemoteService, pRemoteChar_1) || !connectCharacteristic(pRemoteService, pRemoteChar_2)) {
+        pClient->disconnect();
+        return false;
+    }
+    return true;
+}
+
+// Connect to BLE characteristic
+bool connectCharacteristic(BLERemoteService* pRemoteService, BLERemoteCharacteristic* l_BLERemoteChar) {
+  if (l_BLERemoteChar == nullptr) {
+    Serial.print("Failed to find one of the characteristics");
+    return false;
+  }
+  if (l_BLERemoteChar->canNotify()) {
+    l_BLERemoteChar->registerForNotify(notifyCallback);
+  }
+  return true;
+}
+
+// BLE advertised device callback
+class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) {
+    Serial.println(advertisedDevice.toString().c_str());
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceUUID)) {
+      BLEDevice::getScan()->stop();
+      myDevice = new BLEAdvertisedDevice(advertisedDevice);
+      doConnect = true;
+      doScan = true;
+    }
+  }
+}; 
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(motorPin, OUTPUT);
+  pinMode(motorPin2, OUTPUT);
+
+  Serial.println("Starting Arduino BLE Client application...");
+  BLEDevice::init("");
+
+  BLEScan* pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  pBLEScan->setInterval(1349);
+  pBLEScan->setWindow(449);
+  pBLEScan->setActiveScan(true);
+  pBLEScan->start(5, false);
+}
+
+void loop() {
+  if (doConnect == true) {
+    if (connectToServer()) {
+      Serial.println("We are now connected to the BLE Server.");
+    } else {
+      Serial.println("Failed to connect to the server.");
+    }
+    doConnect = false;
+  }
+
+  if (connected) {
+    // Read proximity sensor value
+    std::string rxValue1 = pRemoteChar_1->readValue();
+    if (rxValue1.length() == 4) {
+      const uint8_t* data1 = reinterpret_cast<const uint8_t*>(rxValue1.data());
+      uint32_t sensorValue = parseByteArrayToInt(const_cast<uint8_t*>(data1), rxValue1.length());
+      Serial.print("Received Proximity Sensor Value: ");
+      Serial.println(sensorValue);
+      // Handle proximity sensor value here
+      if (sensorValue >= 2500) {
+        digitalWrite(motorPin, HIGH);
+        delay(1000);
+        digitalWrite(motorPin, LOW);
+        delay(500);
+        digitalWrite(motorPin, HIGH);
+        delay(2000);
+        digitalWrite(motorPin, LOW);
+        delay(1000);
+      }
+    } else {
+      Serial.println("Invalid data length for proximity sensor.");
+    }
+
+
+    // Read pressure sensor value
+    std::string rxValue2 = pRemoteChar_2->readValue();
+    if (rxValue2.length() == 4) {
+      uint8_t data2[4];
+      memcpy(data2, rxValue2.data(), 4); // Copy data from rxValue2 to data2 buffer
+      uint32_t pressureValue = parseByteArrayToInt(data2, 4);
+      Serial.print("Received Pressure Sensor Value: ");
+      Serial.println(pressureValue);
+      // Handle pressure sensor value here
+      if (pressureValue > 3000) {
+        digitalWrite(motorPin2, HIGH);
+        delay(500);
+        digitalWrite(motorPin2, LOW);
+        delay(500);
+      }
+    } else {
+      Serial.println("Invalid data length for pressure sensor.");
+    }
+
+  } else if (doScan) {
+    BLEDevice::getScan()->start(0);
+  }
+  
+  delay(200); // Delay between loops
+}
